@@ -1,0 +1,77 @@
+#!/usr/bin/python
+"""
+Alex Lindeman
+2017-08-05
+Provides a JSON API to apcupsd.
+"""
+
+import json, os, socket
+from argparse import ArgumentParser
+from SimpleHTTPServer import SimpleHTTPRequestHandler
+from SocketServer import TCPServer
+from struct import pack
+
+argparser = ArgumentParser(prog="apcupsd-json-server", description="JSON proxy and aggregator for apcupsd")
+argparser.add_argument("-l", "--listen", default="0.0.0.0", help="Server bind address")
+argparser.add_argument("-p", "--port", type=int, default=8008, help="Server port")
+argparser.add_argument("watch", nargs="*", default=[3551], help="Hosts/port(s) apcupsd is running on")
+args = argparser.parse_args()
+
+listen = (args.listen, args.port)
+
+def ups_read(ups):
+  data = ""
+  s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+  s.connect(ups)
+  s.send(pack("xb6s", 6, "status"))
+  while True:
+    data += s.recv(256)
+    if data.endswith("\n\x00\x00"): break
+  s.close()
+  return data
+
+def ups_format(raw):
+  metrics = {}
+  for line in raw.lstrip("\x00\x18").rstrip("\n\x00\x00").split("\n\x00"):
+    key, value = [i.strip() for i in line.split(':', 1)]
+    metrics[key[1:].lower()] = value
+  return metrics
+
+def fetch_ups_data():
+  watch = []
+  for w in args.watch:
+    if type(w) is str and ":" in w:
+      h, p = w.split(":")
+      watch.append((h, int(p)))
+    else:
+      watch.append(("127.0.0.1", int(w)))
+
+  return {
+    "status": u"\ud83d\udc4d",
+    "upses": [ups_format(ups_read(w)) for w in watch]
+  }
+
+class RequestHandler(SimpleHTTPRequestHandler):
+  def do_GET(self):
+    response = None
+    try:
+      if self.path != "/": raise ValueError, "not a valid endpoint"
+      response = fetch_ups_data()
+      self.send_response(200)
+    except ValueError as err:
+      self.send_response(404)
+      response = {"error": "%s" % err}
+    finally:
+      self.send_header("Content-Type", "application/json; charset=utf-8")
+      self.end_headers()
+      self.wfile.write(json.dumps(response))
+
+handler = RequestHandler
+httpd = TCPServer(listen, handler)
+
+try:
+  print "listening on %s:%s\nwatching upses running on port %s" % (listen[0], listen[1], args.watch)
+  httpd.serve_forever()
+finally:
+  print "cleaning up"
+  httpd.socket.close()
