@@ -96,4 +96,4 @@ try:
   httpd.serve_forever()
 finally:
   print "cleaning up"
-  httpd.socket.close()
+  httpd.server_close()
